@@ -7,7 +7,7 @@ import (
 	"github.com/gorilla/handlers"
 	"io"
 	"net/http"
-	"strings"
+	"regexp"
 )
 
 // MiddleWare is a function that takes a http.Handler and wraps your middleware around it.
@@ -23,17 +23,50 @@ func GorillaLogger(w io.Writer) MiddleWare {
 	}
 }
 
-// CannedResponse middleware detects URL.Path starting wit a given pattern and
-// returns a canned response. Non matching responses are passed on to the next
-// handler in the middleware chain
-func CannedResponse(pattern, response string) MiddleWare {
+// Intercept is a convenience Filter middleware that blocks a specific pattern
+// of URL.String() and resonds with provided response string
+func Intercept(pattern, response string) MiddleWare {
+	return Filter(
+		true,
+		[]string{pattern},
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, response)
+		}),
+	)
+}
+
+func makeRegexps(patterns []string) []*regexp.Regexp {
+	ret := make([]*regexp.Regexp, len(patterns))
+	for _, txt := range patterns {
+		ret = append(ret, regexp.MustCompile(txt))
+	}
+	return ret
+}
+
+// Filter whitelists or blacklists URL.String() matched the provide regex patterns
+// Whitelisting passes through only matched requests and Blacklisting passes through
+// non-matched requests. blockHandler is called for the blocked requests.
+func Filter(blacklist bool, patterns []string, blockHandler http.Handler) MiddleWare {
+	regxs := makeRegexps(patterns)
 	return func(next http.Handler) http.Handler {
+		var inLoop, outLoop http.Handler
+		if blacklist {
+			inLoop = blockHandler
+			outLoop = next
+		} else {
+			inLoop = next
+			outLoop = blockHandler
+		}
+
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Index(r.URL.Path, pattern) == 0 {
-				fmt.Fprint(w, response)
-				return
+			urlstr := r.URL.String()
+			for _, regx := range regxs {
+				if regx.MatchString(urlstr) {
+					inLoop.ServeHTTP(w, r)
+					return
+				}
 			}
-			next.ServeHTTP(w, r)
+			outLoop.ServeHTTP(w, r)
 		})
 	}
 }
